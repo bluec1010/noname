@@ -74,6 +74,25 @@ background:var(--card);color:var(--fg);font-size:16px}
 .btn.bad{background:var(--bu);border-color:var(--bu);color:#fff}
 .qres{text-align:center;font-size:16px;padding:26px 0;color:var(--muted)}
 .qres b{display:block;font-size:26px;color:var(--fg);margin:6px 0}
+.seg{display:flex;gap:8px;margin:0 0 14px}
+.seg button{flex:1;padding:10px;border-radius:10px;border:1px solid var(--line);
+background:var(--card);color:var(--muted);font-size:15px}
+.seg button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.rdcard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px}
+.rdname{font-size:22px;font-weight:700;margin-bottom:12px;line-height:1.35}
+.rdh{margin:10px 0;font-size:16px;line-height:1.75}
+.rdb{margin:12px 0;font-size:16px;line-height:1.8;font-weight:600;
+border-left:3px solid var(--book);padding-left:10px}
+.rdk{margin-top:14px}
+.rdk .kwbox{display:inline-block;background:var(--kwbg);color:var(--kwfg);border-radius:7px;
+padding:3px 10px;font-size:14px;font-weight:600;margin:3px 6px 3px 0}
+.hl{font-style:normal;color:var(--book);font-weight:700;background:rgba(46,125,50,.12);
+border-radius:4px;padding:0 3px}
+.hl2{font-style:normal;color:var(--kwfg);font-weight:700}
+.rdprog{height:10px;background:var(--line);border-radius:99px;overflow:hidden;margin:18px 0 6px}
+.rdprog>i{display:block;height:100%;width:0;border-radius:99px;
+background:linear-gradient(90deg,var(--ok),var(--accent));transition:width .1s linear}
+.rdtime{display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}
 .search{width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:12px;
 background:var(--card);color:var(--fg);font-size:16px;margin-bottom:12px}
 .chap{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:10px;overflow:hidden}
@@ -177,6 +196,96 @@ function doQuizAction(a){
   render();
 }
 
+/* ---------- 跟读播放（倒计时 + TTS + 自动下一条） ---------- */
+var VOICE=null,TTS_OK=false;
+function pickVoice(){
+  var vs=(window.speechSynthesis&&speechSynthesis.getVoices())||[];
+  for(var i=0;i<vs.length;i++){if(/zh|Chinese/i.test(vs[i].lang+' '+vs[i].name))return vs[i];}
+  return null;
+}
+function refreshTTS(){VOICE=pickVoice();TTS_OK=!!VOICE;}
+if(window.speechSynthesis){refreshTTS();speechSynthesis.onvoiceschanged=refreshTTS;}
+window.addEventListener('beforeunload',function(){
+  if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
+});
+
+var rd={list:[],i:0,playing:true,elapsed:0,dur:0,timer:null,scope:'all',arg:'',finished:false};
+var RATE=3;   /* 每秒朗读字数，用来估算每条停留时长 */
+
+function stopTimer(){if(rd.timer){clearInterval(rd.timer);rd.timer=null;}}
+function startTimer(){stopTimer();rd.timer=setInterval(tick,100);}
+function speakRead(){
+  if(!TTS_OK||!rd.list.length)return;
+  var nm=rd.list[rd.i],it=find(nm);
+  var text=nm+'。'+(it?(it.h+'。'+it.b+'。关键词：'+it.k):'');
+  try{
+    speechSynthesis.cancel();
+    var u=new SpeechSynthesisUtterance(text);
+    u.voice=VOICE;u.lang=VOICE.lang;u.rate=1;
+    speechSynthesis.speak(u);
+  }catch(e){}
+}
+function hi(s){
+  var parts=[],t=esc(s);
+  function mark(re){t=t.replace(re,function(){var i=parts.length;parts.push(arguments[0]);return '\u0001'+i+'\u0001';});}
+  mark(/「[^」]{1,30}」/g);                                     /* 引号里的术语 */
+  mark(/\d+(?:\.\d+)?\s*(?:°|′|″|km|mm|cm|m|%)/g);            /* 数值 + 单位 */
+  mark(/[A-Za-zΔΣα-ωΑ-Ω₀-₉√²³·×÷]{1,12}\s*=\s*[^，。；、\s\u0001]{1,22}/g);  /* 公式 */
+  t=t.replace(/\u0001(\d+)\u0001/g,function(_,i){return '<em class="hl">'+parts[+i]+'</em>';});
+  return t;
+}
+function chips(k){
+  if(!k)return '';
+  return k.split('、').map(function(x){return '<span class="kwbox">'+esc(x)+'</span>';}).join(' ');
+}
+function rdGo(i){
+  if(!rd.list.length)return;
+  if(i>=rd.list.length){stopTimer();rd.playing=false;rd.finished=true;
+    if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}render();return;}
+  rd.i=Math.max(0,i);rd.finished=false;rd.elapsed=0;
+  var it=find(rd.list[rd.i]);
+  rd.dur=it?Math.max(6,(it.h.length+it.b.length+it.k.length)/RATE):6;
+  stopTimer();render();speakRead();if(rd.playing)startTimer();
+}
+function startRead(scope,arg){
+  var arr=[];
+  if(scope==='weak'){arr=Object.keys(weak).filter(function(n){return !!find(n);});}
+  else if(scope==='chap'){
+    D.chapters.forEach(function(c){
+      if(c.name===arg)c.items.forEach(function(it){arr.push(it.n);});
+    });
+  }else{
+    D.chapters.forEach(function(c){c.items.forEach(function(it){arr.push(it.n);});});
+  }
+  rd={list:arr,i:0,playing:true,elapsed:0,dur:0,timer:null,scope:scope,arg:arg||'',finished:false};
+  tab='quiz';quizMode='read';syncNav();
+  rdGo(0);
+}
+function tick(){
+  rd.elapsed+=0.1;
+  var p=Math.min(1,rd.elapsed/rd.dur);
+  var bar=document.getElementById('rdbar');if(bar)bar.style.width=(p*100)+'%';
+  var left=document.getElementById('rdleft');
+  if(left)left.textContent='剩余 '+Math.max(0,Math.ceil(rd.dur-rd.elapsed))+' 秒';
+  if(rd.elapsed>=rd.dur)rdGo(rd.i+1);
+}
+function rdAction(a){
+  if(a==='prev'){rd.playing=true;rdGo(rd.i-1);return;}
+  if(a==='next'){rd.playing=true;rdGo(rd.i+1);return;}
+  if(a==='replay'){rd.playing=true;rdGo(rd.i);return;}
+  if(a==='stop'){stopTimer();if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
+    rd={list:[],i:0,playing:true,elapsed:0,dur:0,timer:null,scope:rd.scope,arg:rd.arg,finished:false};
+    render();return;}
+  if(a==='toggle'){
+    rd.playing=!rd.playing;
+    if(rd.playing){if(window.speechSynthesis)try{speechSynthesis.resume();}catch(e){}startTimer();}
+    else{stopTimer();if(window.speechSynthesis)try{speechSynthesis.pause();}catch(e){}}
+    render();return;
+  }
+  if(a.indexOf('start-')===0){startRead(a.slice(6));return;}
+  if(a==='restart'){rdGo(0);return;}
+}
+
 function todayDay(){
   var b=new Date(D.meta.base+'T00:00:00'),n=new Date();
   n.setHours(0,0,0,0);
@@ -189,7 +298,7 @@ var LAST_READY=(function(){var last=1;
   for(var i=1;i<=S.length;i++){var s=S[i-1];
     if(s.nw.length && s.nw.every(function(n){return !!find(n);})) last=i;}
   return last;})();
-var curDay=Math.min(TODAY,LAST_READY),tab='today',q='';
+var curDay=Math.min(TODAY,LAST_READY),tab='today',q='',quizMode='quiz';
 
 function dayItems(d){
   var s=S[d-1],out=[];
@@ -268,7 +377,8 @@ function viewSched(){
   return h+'</tbody></table>';
 }
 
-function viewQuiz(){
+function viewQuiz(){return segHTML()+viewQuizBody();}
+function viewQuizBody(){
   if(!quiz.list.length){
     var t=dayItems(curDay).filter(function(a){return !!find(a[2]);}).length;
     var wn=Object.keys(weak).length;
@@ -315,6 +425,65 @@ function viewWeak(){
   return h;
 }
 
+function segHTML(){
+  return '<div class="seg">'
+    +'<button data-mode="quiz" class="'+(quizMode==='quiz'?'on':'')+'">自测</button>'
+    +'<button data-mode="read" class="'+(quizMode==='read'?'on':'')+'">跟读</button>'
+    +'</div>';
+}
+
+function viewRead(){
+  var h=segHTML();
+  if(!rd.list.length){
+    h+='<h2>选择跟读范围（按章节顺序自动播）</h2>';
+    h+='<div class="qbtns"><button class="btn primary" data-rd="start-all" style="flex:1">全部（'+D.meta.total+' 项）</button></div>';
+    var wn=Object.keys(weak).length;
+    if(wn)h+='<div class="qbtns"><button class="btn bad" data-rd="start-weak">薄弱项（'+wn+' 项）</button></div>';
+    h+='<select id="chapSel" class="search" style="margin-top:14px">'
+      +'<option value="">— 或者只播某一章 —</option>'
+      +D.chapters.map(function(c){
+          return '<option value="'+esc(c.name)+'">'+esc(c.name)+'（'+c.items.length+'）</option>';
+       }).join('')
+      +'</select>';
+    h+='<div class="hint on" style="margin-top:14px">'
+      +(TTS_OK?'✅ 已检测到中文语音，会自动朗读。':'⚠️ 当前设备没检测到中文语音，将只显示文字 + 倒计时（不影响跟读节奏）。')
+      +'<br>每条停留时长 = 字数 ÷ '+RATE+' 字/秒（按背诵语速估算），时间到自动下一条。</div>';
+    return h;
+  }
+  if(rd.finished){
+    return h+'<div class="qres">跟读完成<b>'+rd.list.length+' 项</b>已全部过完</div>'
+      +'<div class="qbtns"><button class="btn primary" data-rd="restart">从头再来</button></div>'
+      +'<div class="qbtns"><button class="btn" data-rd="stop">换个范围</button></div>';
+  }
+  var nm=rd.list[rd.i],it=find(nm);
+  var pct=Math.min(100,rd.dur?rd.elapsed/rd.dur*100:0);
+  h+='<div class="qmeta">第 '+(rd.i+1)+' / '+rd.list.length+' 项'
+    +(TTS_OK?'':' · 静读模式（无中文语音）')+'</div>';
+  h+='<div class="rdcard"><div class="rdname">'+esc(nm)+'</div>';
+  if(it){
+    h+='<p class="rdh">'+hi(it.h)+'</p>';
+    h+='<p class="rdb">'+hi(it.b)+'</p>';
+    h+='<div class="rdk">'+chips(it.k)+'</div>';
+    if(it.note)h+='<p class="rdh" style="color:var(--muted);font-size:14px">'+hi(it.note)+'</p>';
+  }else{
+    h+='<p class="miss">（该项暂无答案）</p>';
+  }
+  h+='</div>';
+  h+='<div class="rdprog"><i id="rdbar" style="width:'+pct+'%"></i></div>';
+  h+='<div class="rdtime"><span id="rdleft">剩余 '+Math.max(0,Math.ceil(rd.dur-rd.elapsed))+' 秒</span>'
+    +'<span>'+(rd.playing?'播放中':'已暂停')+'</span></div>';
+  h+='<div class="qbtns">'
+    +'<button class="btn" data-rd="prev">⏮ 上一条</button>'
+    +'<button class="btn '+(rd.playing?'':'primary')+'" data-rd="toggle">'+(rd.playing?'⏸ 暂停':'▶ 继续')+'</button>'
+    +'<button class="btn" data-rd="next">下一条 ⏭</button>'
+    +'</div>';
+  h+='<div class="qbtns">'
+    +'<button class="btn" data-rd="replay">↻ 重播本条</button>'
+    +'<button class="btn" data-rd="stop">结束跟读</button>'
+    +'</div>';
+  return h;
+}
+
 function render(){
   var s=S[curDay-1];
   document.getElementById('hDay').textContent='第 '+curDay+' 天';
@@ -329,7 +498,7 @@ function render(){
   if(tab==='today')v.innerHTML=viewToday();
   else if(tab==='list'){v.innerHTML=viewList();wireSearch();}
   else if(tab==='sched')v.innerHTML=viewSched();
-  else if(tab==='quiz')v.innerHTML=viewQuiz();
+  else if(tab==='quiz')v.innerHTML=(quizMode==='read'?viewRead():viewQuiz());
   else v.innerHTML=viewWeak();
 }
 
@@ -372,6 +541,15 @@ document.addEventListener('click',function(e){
     else{done[k]=1;item.classList.add('on');}
     save();paintBar();return;
   }
+  var md=e.target.closest('[data-mode]');
+  if(md){
+    quizMode=md.getAttribute('data-mode');
+    if(quizMode==='quiz'){stopTimer();if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
+      rd={list:[],i:0,playing:true,elapsed:0,dur:0,timer:null,scope:'all',arg:'',finished:false};}
+    render();return;
+  }
+  var ra=e.target.closest('[data-rd]');
+  if(ra){rdAction(ra.getAttribute('data-rd'));return;}
   var wk=e.target.closest('[data-wk]');
   if(wk){dropWeak(wk.getAttribute('data-wk'));render();return;}
   var qa=e.target.closest('[data-q]');
@@ -393,6 +571,9 @@ document.addEventListener('click',function(e){
 function syncNav(){
   v_all('nav button').forEach(function(b){b.classList.toggle('on',b.getAttribute('data-tab')===tab);});
 }
+document.addEventListener('change',function(e){
+  if(e.target&&e.target.id==='chapSel'&&e.target.value){startRead('chap',e.target.value);}
+});
 document.getElementById('prev').addEventListener('click',function(){
   if(curDay>1){curDay--;render();window.scrollTo(0,0);}
 });
