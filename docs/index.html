@@ -209,7 +209,7 @@ window.addEventListener('beforeunload',function(){
   if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
 });
 
-var rd={list:[],i:0,playing:true,elapsed:0,dur:0,timer:null,scope:'all',arg:'',finished:false};
+var rd={list:[],i:0,playing:true,muted:true,elapsed:0,dur:0,timer:null,scope:'all',arg:'',finished:false};
 var RATE=4.5;  /* 无 mp3 时的兜底估算：每秒字数 */
 
 /* ---- 预生成 mp3 播放（优先） ---- */
@@ -226,10 +226,11 @@ function playAudio(fn){
   try{
     a.pause();
     a.src='audio/'+fn;
+    a.muted=rd.muted;              /* 静音时也照常「播放」，只是没声音：时间照走、倒计时照跟 */
     a.currentTime=0;
     a.onended=function(){
       if(gen!==AD_GEN)return;      /* 旧音频的迟到事件，忽略 */
-      if(rd.playing&&rd.list.length)rdGo(rd.i+1);
+      if(rd.playing&&rd.list.length)rdGo(rd.i+1,true);
     };
     if(rd.playing)a.play().catch(function(){});
   }catch(e){}
@@ -274,8 +275,9 @@ function chips(k){
   if(!k)return '';
   return k.split('、').map(function(x){return '<span class="kwbox">'+esc(x)+'</span>';}).join(' ');
 }
-function rdGo(i){
+function rdGo(i,auto){
   if(!rd.list.length)return;
+  if(auto&&!rd.playing)return;   /* 暂停中拒绝一切自动推进（音频 ended / 计时超时） */
   var now=Date.now();
   if(rd.lastAt&&now-rd.lastAt<250)return;   /* 防抖：避免同一次结束被推进两次 */
   rd.lastAt=now;
@@ -286,7 +288,7 @@ function rdGo(i){
   var hasMp3=!!(it&&it.a);
   rd.dur=hasMp3?(it.ad||estDur(it)):estDur(it);
   stopTimer();render();
-  if(hasMp3)playAudio(it.a); else speakRead();
+  if(hasMp3)playAudio(it.a); else if(!rd.muted)speakRead();
   if(rd.playing)startTimer();
 }
 function startRead(scope,arg){
@@ -299,18 +301,19 @@ function startRead(scope,arg){
   }else{
     D.chapters.forEach(function(c){c.items.forEach(function(it){arr.push(it.n);});});
   }
-  rd={list:arr,i:0,playing:true,elapsed:0,dur:0,timer:null,scope:scope,arg:arg||'',finished:false};
+  rd={list:arr,i:0,playing:true,muted:true,elapsed:0,dur:0,timer:null,scope:scope,arg:arg||'',finished:false,lastAt:0};
   tab='quiz';quizMode='read';syncNav();
   rdGo(0);
 }
 function tick(){
   var a=AD;
-  if(a&&a.src){
-    /* 有 mp3：进度完全跟随音频（切换交给 ended 事件） */
-    if(a.duration>0){rd.dur=a.duration;rd.elapsed=a.currentTime;}
+  /* 音频真的可用（有 src 且 duration 有效）才用它驱动，否则一律回到计时，绝不卡死 */
+  var live=a&&a.src&&!a.paused&&isFinite(a.duration)&&a.duration>0;
+  if(live){
+    rd.dur=a.duration;rd.elapsed=a.currentTime;   /* 切换交给 ended 事件 */
   }else{
     rd.elapsed+=0.1;
-    if(rd.elapsed>=rd.dur){rdGo(rd.i+1);return;}
+    if(rd.elapsed>=rd.dur){rdGo(rd.i+1,true);return;}
   }
   var p=Math.min(1,rd.dur?rd.elapsed/rd.dur:0);
   var bar=document.getElementById('rdbar');if(bar)bar.style.width=(p*100)+'%';
@@ -323,8 +326,18 @@ function rdAction(a){
   if(a==='replay'){rd.playing=true;rdGo(rd.i);return;}
   if(a==='stop'){stopTimer();killAudio();
     if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
-    rd={list:[],i:0,playing:true,elapsed:0,dur:0,timer:null,scope:rd.scope,arg:rd.arg,finished:false};
+    rd={list:[],i:0,playing:true,muted:true,elapsed:0,dur:0,timer:null,scope:rd.scope,arg:rd.arg,finished:false,lastAt:0};
     render();return;}
+  if(a==='mute'){
+    rd.muted=!rd.muted;
+    if(AD){
+      AD.muted=rd.muted;
+      if(!rd.muted&&AD.src&&rd.playing&&AD.paused){try{AD.play();}catch(e){}}
+    }
+    if(!rd.muted)speakRead();   /* 无 mp3 时靠系统语音兜底 */
+    else if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
+    render();return;
+  }
   if(a==='toggle'){
     rd.playing=!rd.playing;
     if(rd.playing){
@@ -503,7 +516,8 @@ function viewRead(){
       +'</select>';
     h+='<div class="hint on" style="margin-top:14px">'
       +'🔊 已内置 AI 语音（云希），只朗读「课本要点 + 关键词」，不读人话。'
-      +'<br>倒计时跟随音频真实时长，播完自动下一条。</div>';
+      +'<br>倒计时跟随音频真实时长，播完自动下一条。'
+      +'<br><b>默认静音</b>：要听声音，点播放页的「🔇 静音中」按钮切换。</div>';
     return h;
   }
   if(rd.finished){
@@ -514,7 +528,8 @@ function viewRead(){
   var nm=rd.list[rd.i],it=find(nm);
   var pct=Math.min(100,rd.dur?rd.elapsed/rd.dur*100:0);
   h+='<div class="qmeta">第 '+(rd.i+1)+' / '+rd.list.length+' 项'
-    +(it&&it.a?' · 🔊 云希':' · 无语音（回退系统朗读）')+'</div>';
+    +(it&&it.a?' · 🔊 云希':' · 无语音（回退系统朗读）')
+    +(rd.muted?' · 🔇 静音':'')+'</div>';
   h+='<div class="rdcard"><div class="rdname">'+esc(nm)+'</div>';
   if(it){
     h+='<p class="rdh">'+hi(it.h,it.m)+'</p>';
@@ -534,8 +549,9 @@ function viewRead(){
     +'<button class="btn" data-rd="next">下一条 ⏭</button>'
     +'</div>';
   h+='<div class="qbtns">'
-    +'<button class="btn" data-rd="replay">↻ 重播本条</button>'
-    +'<button class="btn" data-rd="stop">结束跟读</button>'
+    +'<button class="btn '+(rd.muted?'':'good')+'" data-rd="mute">'+(rd.muted?'🔇 静音中':'🔊 有声音')+'</button>'
+    +'<button class="btn" data-rd="replay">↻ 重播</button>'
+    +'<button class="btn" data-rd="stop">结束</button>'
     +'</div>';
   return h;
 }
@@ -602,7 +618,7 @@ document.addEventListener('click',function(e){
     quizMode=md.getAttribute('data-mode');
     if(quizMode==='quiz'){stopTimer();killAudio();
       if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
-      rd={list:[],i:0,playing:true,elapsed:0,dur:0,timer:null,scope:'all',arg:'',finished:false};}
+      rd={list:[],i:0,playing:true,muted:true,elapsed:0,dur:0,timer:null,scope:'all',arg:'',finished:false,lastAt:0};}
     render();return;
   }
   var ra=e.target.closest('[data-rd]');
