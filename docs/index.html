@@ -93,6 +93,14 @@ border-radius:4px;padding:0 3px}
 .rdprog>i{display:block;height:100%;width:0;border-radius:99px;
 background:linear-gradient(90deg,var(--ok),var(--accent));transition:width .1s linear}
 .rdtime{display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}
+/* ---- 跟读专注模式：只留卡片/倒计时/控制 ---- */
+.rdtop{display:flex;align-items:center;justify-content:space-between;margin:0 0 12px}
+.rdtop button{border:1px solid var(--line);background:var(--card);color:var(--fg);
+border-radius:10px;padding:9px 16px;font-size:14px}
+.rdtop .rpos{font-size:13px;color:var(--muted)}
+body.focus header,body.focus nav,body.focus .foot{display:none!important}
+body.focus{padding-bottom:16px}
+body.focus main{padding-top:14px}
 .search{width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:12px;
 background:var(--card);color:var(--fg);font-size:16px;margin-bottom:12px}
 .chap{background:var(--card);border:1px solid var(--line);border-radius:14px;margin-bottom:10px;overflow:hidden}
@@ -330,13 +338,22 @@ function rdAction(a){
     render();return;}
   if(a==='mute'){
     rd.muted=!rd.muted;
+    var cur=find(rd.list[rd.i]||'');
     if(AD){
       AD.muted=rd.muted;
       if(!rd.muted&&AD.src&&rd.playing&&AD.paused){try{AD.play();}catch(e){}}
     }
-    if(!rd.muted)speakRead();   /* 无 mp3 时靠系统语音兜底 */
-    else if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
+    /* 只有「这条没有 mp3」才动系统语音，否则会 mp3 + 系统语音双重朗读 */
+    if(!rd.muted&&!(cur&&cur.a))speakRead();
+    if(rd.muted&&window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
     render();return;
+  }
+  if(a==='exit'){
+    stopTimer();killAudio();
+    if(window.speechSynthesis)try{speechSynthesis.cancel();}catch(e){}
+    rd={list:[],i:0,playing:true,muted:true,elapsed:0,dur:0,timer:null,scope:'all',arg:'',finished:false,lastAt:0};
+    quizMode='quiz';tab='today';document.body.classList.remove('focus');
+    syncNav();render();return;
   }
   if(a==='toggle'){
     rd.playing=!rd.playing;
@@ -502,7 +519,9 @@ function segHTML(){
 }
 
 function viewRead(){
-  var h=segHTML();
+  /* 专注模式：只有「退出 + 进度」「卡片」「倒计时」「控制」，别的 UI 全隐藏 */
+  var h='<div class="rdtop"><button data-rd="exit">✕ 退出</button>'
+    +'<span class="rpos">'+(rd.list.length?('第 '+(rd.i+1)+' / '+rd.list.length+' 项'):'跟读')+'</span></div>';
   if(!rd.list.length){
     h+='<h2>选择跟读范围（按章节顺序自动播）</h2>';
     h+='<div class="qbtns"><button class="btn primary" data-rd="start-all" style="flex:1">全部（'+D.meta.total+' 项）</button></div>';
@@ -515,21 +534,18 @@ function viewRead(){
        }).join('')
       +'</select>';
     h+='<div class="hint on" style="margin-top:14px">'
-      +'🔊 已内置 AI 语音（云希），只朗读「课本要点 + 关键词」，不读人话。'
+      +'🔊 AI 语音（云希）只念「课本要点 + 关键词」，不念人话。'
       +'<br>倒计时跟随音频真实时长，播完自动下一条。'
-      +'<br><b>默认静音</b>：要听声音，点播放页的「🔇 静音中」按钮切换。</div>';
+      +'<br><b>默认静音</b>，要听声音点「🔇 静音中」。</div>';
     return h;
   }
   if(rd.finished){
     return h+'<div class="qres">跟读完成<b>'+rd.list.length+' 项</b>已全部过完</div>'
       +'<div class="qbtns"><button class="btn primary" data-rd="restart">从头再来</button></div>'
-      +'<div class="qbtns"><button class="btn" data-rd="stop">换个范围</button></div>';
+      +'<div class="qbtns"><button class="btn" data-rd="exit">✕ 退出</button></div>';
   }
   var nm=rd.list[rd.i],it=find(nm);
   var pct=Math.min(100,rd.dur?rd.elapsed/rd.dur*100:0);
-  h+='<div class="qmeta">第 '+(rd.i+1)+' / '+rd.list.length+' 项'
-    +(it&&it.a?' · 🔊 云希':' · 无语音（回退系统朗读）')
-    +(rd.muted?' · 🔇 静音':'')+'</div>';
   h+='<div class="rdcard"><div class="rdname">'+esc(nm)+'</div>';
   if(it){
     h+='<p class="rdh">'+hi(it.h,it.m)+'</p>';
@@ -542,7 +558,7 @@ function viewRead(){
   h+='</div>';
   h+='<div class="rdprog"><i id="rdbar" style="width:'+pct+'%"></i></div>';
   h+='<div class="rdtime"><span id="rdleft">剩余 '+Math.max(0,Math.ceil(rd.dur-rd.elapsed))+' 秒</span>'
-    +'<span>'+(rd.playing?'播放中':'已暂停')+'</span></div>';
+    +'<span>'+(rd.playing?'播放中':'已暂停')+(rd.muted?' · 🔇 静音':'')+'</span></div>';
   h+='<div class="qbtns">'
     +'<button class="btn" data-rd="prev">⏮ 上一条</button>'
     +'<button class="btn '+(rd.playing?'':'primary')+'" data-rd="toggle">'+(rd.playing?'⏸ 暂停':'▶ 继续')+'</button>'
@@ -551,7 +567,6 @@ function viewRead(){
   h+='<div class="qbtns">'
     +'<button class="btn '+(rd.muted?'':'good')+'" data-rd="mute">'+(rd.muted?'🔇 静音中':'🔊 有声音')+'</button>'
     +'<button class="btn" data-rd="replay">↻ 重播</button>'
-    +'<button class="btn" data-rd="stop">结束</button>'
     +'</div>';
   return h;
 }
@@ -572,6 +587,8 @@ function render(){
   else if(tab==='sched')v.innerHTML=viewSched();
   else if(tab==='quiz')v.innerHTML=(quizMode==='read'?viewRead():viewQuiz());
   else v.innerHTML=viewWeak();
+  /* 跟读模式进「专注」：隐藏顶部天数栏、底部导航、页脚 */
+  document.body.classList.toggle('focus',tab==='quiz'&&quizMode==='read');
 }
 
 function wireSearch(){
